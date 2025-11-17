@@ -9,8 +9,7 @@ app.use(express.json());
 console.log('🚀 Starting Sleep Tracker Backend...');
 
 // MongoDB Configuration
-const MONGODB_URI = 'mongodb+srv://sleepapp:Sleep123adcd@cluster0.qyenjoe.mongodb.net/sleep_tracker?retryWrites=true&w=majority';
-let db = null;
+const MONGODB_URI = 'mongodb+srv://sleepapp:SleepApp12345@cluster0.qyenjoe.mongodb.net/sleep_tracker?retryWrites=true&w=majority';let db = null;
 let client = null;
 
 // Connect to MongoDB
