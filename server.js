@@ -28,16 +28,8 @@ async function connectDB() {
         db = client.db(DB_NAME);
         console.log('✅ MongoDB Connected Successfully!');
         
-        // Create collections if they don't exist
-        await db.createCollection('users');
-        await db.createCollection('sleep_sessions');
-        await db.createCollection('sounds');
-        
-        console.log('📊 Database collections ready!');
-        
     } catch (error) {
         console.log('❌ MongoDB Connection Failed:', error.message);
-        console.log('💡 Please check MongoDB Atlas IP Whitelist');
     }
 }
 
@@ -46,7 +38,7 @@ connectDB();
 
 // ==================== REAL DATA APIs ====================
 
-// 1. Health Check
+// 1. Health Check - ALWAYS WORKS
 app.get('/api/health', async (req, res) => {
     try {
         const dbStatus = db ? 'CONNECTED ✅' : 'DISCONNECTED ❌';
@@ -62,7 +54,7 @@ app.get('/api/health', async (req, res) => {
     }
 });
 
-// 2. Dashboard Statistics - REAL DATA
+// 2. Dashboard Statistics - REAL DATA WITH FALLBACK
 app.get('/api/dashboard/stats', async (req, res) => {
     try {
         if (!db) {
@@ -83,6 +75,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
             date: { $gte: today } 
         });
 
+        // If no data, return zeros instead of error
         res.json({
             totalUsers: totalUsers || 0,
             activeSubscriptions: premiumUsers || 0,
@@ -93,7 +86,16 @@ app.get('/api/dashboard/stats', async (req, res) => {
             timestamp: new Date().toISOString()
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        // Return zeros instead of error
+        res.json({
+            totalUsers: 0,
+            activeSubscriptions: 0,
+            totalSleepSessions: 0,
+            todaySleepSessions: 0,
+            premiumUsers: 0,
+            database: "error",
+            timestamp: new Date().toISOString()
+        });
     }
 });
 
@@ -322,12 +324,11 @@ app.get('/api/setup-demo', async (req, res) => {
         ];
 
         const usersResult = await usersCollection.insertMany(users);
-        const createdUsers = Object.values(usersResult.insertedIds);
 
         // Create real sleep sessions
         const sleepSessions = [
             {
-                userId: createdUsers[0].toString(),
+                userId: usersResult.insertedIds[0].toString(),
                 duration: 7.5,
                 quality: 85,
                 stages: { light: 4.5, deep: 1.5, rem: 1.5 },
@@ -336,7 +337,7 @@ app.get('/api/setup-demo', async (req, res) => {
                 createdAt: new Date()
             },
             {
-                userId: createdUsers[1].toString(),
+                userId: usersResult.insertedIds[1].toString(),
                 duration: 6.2,
                 quality: 72,
                 stages: { light: 3.8, deep: 1.2, rem: 1.2 },
