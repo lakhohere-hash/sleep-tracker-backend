@@ -1008,6 +1008,209 @@ app.get('/api/videos/stats', async (req, res) => {
         });
     }
 });
+// ==================== AUTHENTICATION ENDPOINTS ====================
+
+// POST /api/users/register - User registration
+app.post('/api/users/register', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Database not connected' 
+            });
+        }
+
+        const { name, email, password, subscription = 'free' } = req.body;
+        
+        // Validate required fields
+        if (!name || !email || !password) {
+            return res.status(400).json({
+                success: false,
+                error: 'Name, email, and password are required'
+            });
+        }
+
+        const usersCollection = db.collection('users');
+        
+        // Check if user already exists
+        const existingUser = await usersCollection.findOne({ email });
+        if (existingUser) {
+            return res.status(409).json({
+                success: false,
+                error: 'User already exists with this email'
+            });
+        }
+
+        // Create new user
+        const newUser = {
+            name,
+            email,
+            password, // In production, you should hash this!
+            subscription,
+            loginMethod: 'email',
+            sleepSessionsCount: 0,
+            totalSleepHours: 0,
+            lastLogin: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date()
+        };
+
+        const result = await usersCollection.insertOne(newUser);
+        
+        res.status(201).json({
+            success: true,
+            message: 'User registered successfully',
+            user: {
+                _id: result.insertedId.toString(),
+                name: newUser.name,
+                email: newUser.email,
+                subscription: newUser.subscription,
+                loginMethod: newUser.loginMethod,
+                createdAt: newUser.createdAt
+            }
+        });
+
+    } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Registration failed: ' + error.message 
+        });
+    }
+});
+
+// POST /api/users/login - User login
+app.post('/api/users/login', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Database not connected' 
+            });
+        }
+
+        const { email, password } = req.body;
+        
+        // Validate required fields
+        if (!email || !password) {
+            return res.status(400).json({
+                success: false,
+                error: 'Email and password are required'
+            });
+        }
+
+        const usersCollection = db.collection('users');
+        
+        // Find user by email
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                error: 'Invalid email or password'
+            });
+        }
+
+        // In production, you should use proper password hashing!
+        // For now, we'll do simple comparison
+        if (user.password !== password) {
+            return res.status(401).json({
+                success: false,
+                error: 'Invalid email or password'
+            });
+        }
+
+        // Update last login
+        await usersCollection.updateOne(
+            { _id: user._id },
+            { $set: { lastLogin: new Date() } }
+        );
+
+        // In production, generate JWT token here
+        const userResponse = {
+            _id: user._id.toString(),
+            name: user.name,
+            email: user.email,
+            subscription: user.subscription || 'free',
+            loginMethod: user.loginMethod || 'email',
+            sleepSessionsCount: user.sleepSessionsCount || 0,
+            totalSleepHours: user.totalSleepHours || 0,
+            lastLogin: new Date(),
+            createdAt: user.createdAt
+        };
+
+        res.json({
+            success: true,
+            message: 'Login successful',
+            user: userResponse,
+            token: 'jwt-token-placeholder' // In production, generate real JWT
+        });
+
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Login failed: ' + error.message 
+        });
+    }
+});
+
+// GET /api/users/profile - Get user profile (protected route)
+app.get('/api/users/profile', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Database not connected' 
+            });
+        }
+
+        // In production, get user ID from JWT token
+        const userId = req.headers['user-id'] || req.query.userId;
+        
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                error: 'User ID required'
+            });
+        }
+
+        const usersCollection = db.collection('users');
+        const user = await usersCollection.findOne({ 
+            _id: new ObjectId(userId) 
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+
+        const userProfile = {
+            _id: user._id.toString(),
+            name: user.name,
+            email: user.email,
+            subscription: user.subscription || 'free',
+            loginMethod: user.loginMethod || 'email',
+            sleepSessionsCount: user.sleepSessionsCount || 0,
+            totalSleepHours: user.totalSleepHours || 0,
+            lastLogin: user.lastLogin,
+            createdAt: user.createdAt
+        };
+
+        res.json({
+            success: true,
+            user: userProfile
+        });
+
+    } catch (error) {
+        console.error('Profile fetch error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to fetch profile: ' + error.message 
+        });
+    }
+});
 
 // ==================== AI DETECTION SYSTEM ====================
 
