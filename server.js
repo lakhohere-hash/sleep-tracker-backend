@@ -597,6 +597,401 @@ app.get('/admin/sleep-data', async (req, res) => {
         });
     }
 });
+// ==================== VIDEO CONTENT SYSTEM ====================
+
+// GET /api/videos - Get all videos for Flutter app
+app.get('/api/videos', async (req, res) => {
+    try {
+        if (!db) {
+            // Fallback demo videos
+            const demoVideos = [
+                {
+                    _id: '1',
+                    title: 'Guided Sleep Meditation',
+                    description: 'Calming meditation for deep sleep and relaxation',
+                    videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-tree-with-yellow-flowers-1173-large.mp4',
+                    thumbnail: 'https://images.unsplash.com/photo-1548613053-8a02c85d3b62?w=400',
+                    duration: '15:00',
+                    category: 'meditation',
+                    isPremium: false,
+                    views: 1245,
+                    createdAt: new Date().toISOString()
+                },
+                {
+                    _id: '2',
+                    title: 'Deep Breathing Exercises',
+                    description: 'Breathing techniques for better sleep and stress relief',
+                    videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-white-flowers-in-the-breeze-1174-large.mp4',
+                    thumbnail: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400',
+                    duration: '10:30',
+                    category: 'breathing',
+                    isPremium: false,
+                    views: 876,
+                    createdAt: new Date().toISOString()
+                },
+                {
+                    _id: '3',
+                    title: 'Sleep Yoga for Beginners',
+                    description: 'Gentle yoga poses to prepare your body for sleep',
+                    videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-going-down-a-curved-highway-down-a-mountain-41576-large.mp4',
+                    thumbnail: 'https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=400',
+                    duration: '20:15',
+                    category: 'yoga',
+                    isPremium: true,
+                    views: 543,
+                    createdAt: new Date().toISOString()
+                },
+                {
+                    _id: '4',
+                    title: 'Nature Sounds for Sleep',
+                    description: 'Peaceful nature sounds to help you fall asleep faster',
+                    videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-a-girl-blowing-dandelion-seeds-in-nature-39764-large.mp4',
+                    thumbnail: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=400',
+                    duration: '45:00',
+                    category: 'nature',
+                    isPremium: false,
+                    views: 2314,
+                    createdAt: new Date().toISOString()
+                },
+                {
+                    _id: '5',
+                    title: 'Advanced Sleep Meditation',
+                    description: 'Deep meditation for experienced practitioners',
+                    videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-a-girl-petting-a-dog-on-a-meadow-39765-large.mp4',
+                    thumbnail: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400',
+                    duration: '25:30',
+                    category: 'meditation',
+                    isPremium: true,
+                    views: 389,
+                    createdAt: new Date().toISOString()
+                }
+            ];
+            return res.json(demoVideos);
+        }
+
+        const videosCollection = db.collection('videos');
+        const { category, isPremium } = req.query;
+        
+        let query = { status: 'active' };
+        if (category && category !== 'all') query.category = category;
+        if (isPremium) query.isPremium = isPremium === 'true';
+
+        const videos = await videosCollection.find(query).sort({ createdAt: -1 }).toArray();
+        
+        const formattedVideos = videos.map(video => ({
+            _id: video._id.toString(),
+            title: video.title,
+            description: video.description,
+            videoUrl: video.videoUrl,
+            thumbnail: video.thumbnail,
+            duration: video.duration || '0:00',
+            category: video.category,
+            isPremium: video.isPremium || false,
+            views: video.views || 0,
+            createdAt: video.createdAt
+        }));
+
+        res.json(formattedVideos);
+    } catch (error) {
+        console.error('Error fetching videos:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to fetch videos' 
+        });
+    }
+});
+
+// GET /api/videos/categories - Get video categories
+app.get('/api/videos/categories', async (req, res) => {
+    try {
+        if (!db) {
+            return res.json([
+                { name: 'meditation', count: 12, icon: 'mediation' },
+                { name: 'breathing', count: 8, icon: 'air' },
+                { name: 'yoga', count: 6, icon: 'self_improvement' },
+                { name: 'nature', count: 15, icon: 'nature' },
+                { name: 'stories', count: 10, icon: 'menu_book' }
+            ]);
+        }
+
+        const videosCollection = db.collection('videos');
+        const categories = await videosCollection.aggregate([
+            { $match: { status: 'active' } },
+            { $group: { 
+                _id: '$category', 
+                count: { $sum: 1 } 
+            }},
+            { $project: { 
+                name: '$_id', 
+                count: 1,
+                _id: 0 
+            }}
+        ]).toArray();
+
+        // Add icons for categories
+        const categoryIcons = {
+            'meditation': 'mediation',
+            'breathing': 'air',
+            'yoga': 'self_improvement',
+            'nature': 'nature',
+            'stories': 'menu_book'
+        };
+
+        const categoriesWithIcons = categories.map(cat => ({
+            ...cat,
+            icon: categoryIcons[cat.name] || 'play_circle'
+        }));
+
+        res.json(categoriesWithIcons);
+    } catch (error) {
+        console.error('Error fetching categories:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to fetch categories' 
+        });
+    }
+});
+
+// GET /api/videos/:id - Get single video
+app.get('/api/videos/:id', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(500).json({ error: 'Database not connected' });
+        }
+
+        const videoId = req.params.id;
+        const videosCollection = db.collection('videos');
+        
+        const video = await videosCollection.findOne({ 
+            _id: new ObjectId(videoId) 
+        });
+
+        if (!video) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Video not found' 
+            });
+        }
+
+        // Increment view count
+        await videosCollection.updateOne(
+            { _id: new ObjectId(videoId) },
+            { $inc: { views: 1 } }
+        );
+
+        res.json({
+            _id: video._id.toString(),
+            title: video.title,
+            description: video.description,
+            videoUrl: video.videoUrl,
+            thumbnail: video.thumbnail,
+            duration: video.duration || '0:00',
+            category: video.category,
+            isPremium: video.isPremium || false,
+            views: (video.views || 0) + 1,
+            createdAt: video.createdAt
+        });
+    } catch (error) {
+        console.error('Error fetching video:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to fetch video' 
+        });
+    }
+});
+
+// POST /api/videos - Create new video (for Flutter app)
+app.post('/api/videos', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(500).json({ error: 'Database not connected' });
+        }
+
+        const { title, description, videoUrl, thumbnail, duration, category, isPremium } = req.body;
+        
+        // Validate required fields
+        if (!title || !videoUrl) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Title and video URL are required' 
+            });
+        }
+
+        const videosCollection = db.collection('videos');
+        const newVideo = {
+            title,
+            description: description || '',
+            videoUrl,
+            thumbnail: thumbnail || '/thumbnails/default.jpg',
+            duration: duration || '0:00',
+            category: category || 'meditation',
+            isPremium: isPremium || false,
+            views: 0,
+            status: 'active',
+            createdAt: new Date(),
+            updatedAt: new Date()
+        };
+
+        const result = await videosCollection.insertOne(newVideo);
+        
+        res.json({
+            success: true,
+            message: 'Video created successfully',
+            videoId: result.insertedId.toString(),
+            video: { ...newVideo, _id: result.insertedId.toString() }
+        });
+    } catch (error) {
+        console.error('Error creating video:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to create video' 
+        });
+    }
+});
+
+// PUT /api/videos/:id - Update video
+app.put('/api/videos/:id', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(500).json({ error: 'Database not connected' });
+        }
+
+        const videoId = req.params.id;
+        const { title, description, videoUrl, thumbnail, duration, category, isPremium, status } = req.body;
+        
+        const videosCollection = db.collection('videos');
+        const updateData = {
+            updatedAt: new Date()
+        };
+
+        if (title) updateData.title = title;
+        if (description) updateData.description = description;
+        if (videoUrl) updateData.videoUrl = videoUrl;
+        if (thumbnail) updateData.thumbnail = thumbnail;
+        if (duration) updateData.duration = duration;
+        if (category) updateData.category = category;
+        if (isPremium !== undefined) updateData.isPremium = isPremium;
+        if (status) updateData.status = status;
+
+        const result = await videosCollection.updateOne(
+            { _id: new ObjectId(videoId) },
+            { $set: updateData }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Video not found' 
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Video updated successfully',
+            updated: result.modifiedCount
+        });
+    } catch (error) {
+        console.error('Error updating video:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to update video' 
+        });
+    }
+});
+
+// DELETE /api/videos/:id - Delete video
+app.delete('/api/videos/:id', async (req, res) => {
+    try {
+        if (!db) {
+            return res.status(500).json({ error: 'Database not connected' });
+        }
+
+        const videoId = req.params.id;
+        const videosCollection = db.collection('videos');
+        
+        const result = await videosCollection.deleteOne({ 
+            _id: new ObjectId(videoId) 
+        });
+
+        if (result.deletedCount === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Video not found' 
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Video deleted successfully',
+            deleted: result.deletedCount
+        });
+    } catch (error) {
+        console.error('Error deleting video:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to delete video' 
+        });
+    }
+});
+
+// GET /api/videos/stats - Get video statistics
+app.get('/api/videos/stats', async (req, res) => {
+    try {
+        if (!db) {
+            return res.json({
+                totalVideos: 5,
+                totalViews: 5367,
+                avgDuration: '19:12',
+                mostPopularCategory: 'meditation',
+                premiumVideos: 2,
+                freeVideos: 3
+            });
+        }
+
+        const videosCollection = db.collection('videos');
+        
+        const totalVideos = await videosCollection.countDocuments({ status: 'active' });
+        const premiumVideos = await videosCollection.countDocuments({ 
+            status: 'active', 
+            isPremium: true 
+        });
+        
+        const viewsResult = await videosCollection.aggregate([
+            { $match: { status: 'active' } },
+            { $group: { 
+                _id: null, 
+                totalViews: { $sum: '$views' },
+                avgDuration: { $avg: '$duration' }
+            }}
+        ]).toArray();
+
+        const categoryStats = await videosCollection.aggregate([
+            { $match: { status: 'active' } },
+            { $group: { 
+                _id: '$category', 
+                count: { $sum: 1 },
+                totalViews: { $sum: '$views' }
+            }},
+            { $sort: { totalViews: -1 } },
+            { $limit: 1 }
+        ]).toArray();
+
+        res.json({
+            totalVideos,
+            totalViews: viewsResult[0]?.totalViews || 0,
+            avgDuration: viewsResult[0]?.avgDuration || '0:00',
+            mostPopularCategory: categoryStats[0]?._id || 'meditation',
+            premiumVideos,
+            freeVideos: totalVideos - premiumVideos
+        });
+    } catch (error) {
+        console.error('Error fetching video stats:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to fetch video statistics' 
+        });
+    }
+});
 
 // ==================== EXISTING TEST ENDPOINTS ====================
 app.get('/api/test', (req, res) => {
