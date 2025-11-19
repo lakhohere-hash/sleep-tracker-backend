@@ -21,8 +21,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 console.log('🚀 Starting PRODUCTION Sleep Tracker Backend with AI & Admin Panel...');
 
 // MongoDB Configuration
-const MONGODB_URI = 'mongodb+srv://sleepapp:SleepApp123@cluster0.qyenjoe.mongodb.net/sleep_tracker?retryWrites=true&w=majority&appName=Cluster0';
-const DB_NAME = 'sleep_tracker';
+const MONGODB_URI = 'mongodb+srv://sleepapp:SleepApp12345@cluster0.qyenjoe.mongodb.net/sleep_tracker?retryWrites=true&w=majority&appName=Cluster0';const DB_NAME = 'sleep_tracker';
 const JWT_SECRET = 'your-super-secret-jwt-key-change-in-production';
 
 let db = null;
