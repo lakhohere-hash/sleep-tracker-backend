@@ -71,6 +71,78 @@ async function connectDB() {
 
 // Initialize database connection
 connectDB();
+// Add test data if collections are empty
+async function initializeTestData() {
+  try {
+    const usersCollection = db.collection('users');
+    const soundsCollection = db.collection('sounds');
+    
+    // Check if users collection is empty
+    const userCount = await usersCollection.countDocuments();
+    if (userCount === 0) {
+      console.log('📝 Adding test users...');
+      await usersCollection.insertMany([
+        {
+          name: 'John Legend',
+          email: 'john@example.com',
+          subscription: 'premium',
+          loginMethod: 'email',
+          sleepSessionsCount: 45,
+          totalSleepHours: 320,
+          lastLogin: new Date(),
+          createdAt: new Date()
+        },
+        {
+          name: 'Sarah Chen', 
+          email: 'sarah@example.com',
+          subscription: 'free',
+          loginMethod: 'google',
+          sleepSessionsCount: 23,
+          totalSleepHours: 165,
+          lastLogin: new Date(),
+          createdAt: new Date()
+        }
+      ]);
+      console.log('✅ Test users added');
+    }
+
+    // Check if sounds collection is empty
+    const soundCount = await soundsCollection.countDocuments();
+    if (soundCount === 0) {
+      console.log('🎵 Adding test sounds...');
+      await soundsCollection.insertMany([
+        {
+          name: 'Ocean Waves',
+          category: 'nature',
+          filePath: '/sounds/ocean.mp3',
+          isPremium: false,
+          duration: '30:00',
+          playCount: 1247,
+          status: 'active',
+          createdAt: new Date()
+        },
+        {
+          name: 'Rainforest',
+          category: 'nature', 
+          filePath: '/sounds/rainforest.mp3',
+          isPremium: true,
+          duration: '45:00',
+          playCount: 892,
+          status: 'active',
+          createdAt: new Date()
+        }
+      ]);
+      console.log('✅ Test sounds added');
+    }
+  } catch (error) {
+    console.error('Error initializing test data:', error);
+  }
+}
+
+// Call this after database connection
+connectDB().then(() => {
+  initializeTestData();
+});
 
 // ==================== AUTHENTICATION MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
