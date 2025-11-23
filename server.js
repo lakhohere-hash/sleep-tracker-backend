@@ -472,6 +472,335 @@ app.get('/api/users/profile', authenticateToken, async (req, res) => {
     });
   }
 });
+// ==================== PAYMENT & SUBSCRIPTION SYSTEM ====================
+const stripeService = require('./services/stripeService');
+
+// POST /api/payments/create-checkout-session - Create Stripe checkout session
+app.post('/api/payments/create-checkout-session', authenticateToken, async (req, res) => {
+    try {
+        const { planType, billingInterval = 'monthly' } = req.body;
+        
+        console.log('🚀 Creating checkout session for user:', req.user.userId);
+        
+        if (!planType) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Plan type is required' 
+            });
+        }
+
+        const result = await stripeService.createCheckoutSession(
+            req.user.userId, 
+            planType, 
+            billingInterval
+        );
+
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+
+        res.json({
+            success: true,
+            sessionId: result.sessionId,
+            url: result.url,
+            message: 'Checkout session created successfully'
+        });
+    } catch (error) {
+        console.error('❌ Checkout session creation error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to create checkout session: ' + error.message
+        });
+    }
+});
+
+// GET /api/payments/plans - Get available subscription plans
+app.get('/api/payments/plans', async (req, res) => {
+    try {
+        console.log('📊 Fetching subscription plans');
+        
+        const plans = [
+            {
+                id: 'free',
+                name: 'Free',
+                price: 0,
+                billingInterval: 'monthly',
+                features: [
+                    'Basic sleep tracking',
+                    '5 sounds access', 
+                    'Community support',
+                    'Limited analytics'
+                ],
+                popular: false,
+                buttonText: 'Current Plan'
+            },
+            {
+                id: 'premium',
+                name: 'Premium',
+                price: 9.99,
+                billingInterval: 'monthly',
+                features: [
+                    'Advanced sleep tracking',
+                    '260+ premium sounds',
+                    'AI sleep analysis', 
+                    'Priority support',
+                    'Detailed analytics',
+                    'No ads'
+                ],
+                popular: true,
+                buttonText: 'Upgrade to Premium'
+            },
+            {
+                id: 'enterprise',
+                name: 'Enterprise', 
+                price: 49.99,
+                billingInterval: 'monthly',
+                features: [
+                    'Everything in Premium',
+                    'Family sharing (up to 6 users)',
+                    'Custom sound mixes',
+                    'Dedicated support',
+                    'Advanced analytics',
+                    'White-label options'
+                ],
+                popular: false,
+                buttonText: 'Go Enterprise'
+            }
+        ];
+
+        res.json({
+            success: true,
+            plans: plans
+        });
+    } catch (error) {
+        console.error('❌ Plans fetch error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch plans: ' + error.message
+        });
+    }
+});
+
+// POST /api/payments/webhook - Stripe webhook handler
+app.post('/api/payments/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+    try {
+        const signature = req.headers['stripe-signature'];
+        const result = await stripeService.handleWebhook(req.body, signature);
+        
+        if (result.success) {
+            res.json({ received: true, event: result.event });
+        } else {
+            res.status(400).json({ error: result.error });
+        }
+    } catch (error) {
+        console.error('❌ Webhook error:', error);
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// GET /api/payments/subscription/:userId - Get user subscription
+app.get('/api/payments/subscription/:userId', authenticateToken, async (req, res) => {
+    try {
+        // Verify user can only access their own data
+        if (req.params.userId !== req.user.userId) {
+            return res.status(403).json({ 
+                success: false, 
+                error: 'Access denied' 
+            });
+        }
+
+        const usersCollection = db.collection('users');
+        const user = await usersCollection.findOne({ 
+            _id: new ObjectId(req.user.userId) 
+        });
+
+        if (!user) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'User not found' 
+            });
+        }
+
+        res.json({
+            success: true,
+            subscription: {
+                plan: user.subscription || 'free',
+                status: user.subscriptionStatus || 'inactive',
+                billingInterval: user.billingInterval || 'monthly',
+                nextBillingDate: user.nextBillingDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+                price: user.subscription === 'premium' ? 9.99 : user.subscription === 'enterprise' ? 49.99 : 0
+            }
+        });
+    } catch (error) {
+        console.error('❌ Subscription fetch error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch subscription: ' + error.message
+        });
+    }
+});
+// ==================== FILE UPLOAD SYSTEM ====================
+const fileUploadService = require('./services/fileUploadService');
+const upload = fileUploadService.getMulterConfig();
+
+// POST /api/upload/audio - Upload audio file
+app.post('/api/upload/audio', authenticateToken, upload.single('audio'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                success: false,
+                error: 'No audio file provided'
+            });
+        }
+
+        console.log('🎵 Uploading audio file:', req.file.originalname);
+
+        // 🎵 Validate audio file
+        const validation = fileUploadService.validateAudioFile(req.file);
+        if (!validation.valid) {
+            return res.status(400).json({
+                success: false,
+                error: validation.error
+            });
+        }
+
+        let uploadResult;
+
+        // ☁️ Try S3 upload first, fallback to local
+        if (process.env.AWS_ACCESS_KEY_ID) {
+            uploadResult = await fileUploadService.uploadToS3(req.file);
+        } else {
+            uploadResult = await fileUploadService.saveFileLocally(req.file);
+        }
+
+        if (!uploadResult.success) {
+            return res.status(500).json(uploadResult);
+        }
+
+        // 💾 Save file info to database
+        const soundsCollection = db.collection('sounds');
+        const soundDocument = {
+            name: req.body.name || req.file.originalname,
+            description: req.body.description || '',
+            category: req.body.category || 'general',
+            fileKey: uploadResult.fileKey || uploadResult.fileName,
+            fileUrl: uploadResult.url || uploadResult.filePath,
+            fileSize: uploadResult.size,
+            duration: req.body.duration || 0,
+            premium: req.body.premium === 'true' || false,
+            status: 'active',
+            uploadedBy: req.user.userId,
+            createdAt: new Date(),
+            updatedAt: new Date()
+        };
+
+        const result = await soundsCollection.insertOne(soundDocument);
+
+        res.json({
+            success: true,
+            message: 'Audio file uploaded successfully',
+            fileInfo: uploadResult,
+            soundId: result.insertedId.toString(),
+            sound: {
+                ...soundDocument,
+                _id: result.insertedId.toString()
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Audio upload error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to upload audio file: ' + error.message
+        });
+    }
+});
+
+// GET /api/upload/signed-url/:fileKey - Get signed URL for secure file access
+app.get('/api/upload/signed-url/:fileKey', authenticateToken, async (req, res) => {
+    try {
+        const { fileKey } = req.params;
+
+        const result = await fileUploadService.getSignedFileUrl(fileKey);
+
+        if (!result.success) {
+            return res.status(400).json(result);
+        }
+
+        res.json({
+            success: true,
+            signedUrl: result.url,
+            expiresAt: result.expiresAt
+        });
+    } catch (error) {
+        console.error('❌ Signed URL error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to generate signed URL: ' + error.message
+        });
+    }
+});
+
+// DELETE /api/upload/audio/:fileKey - Delete audio file
+app.delete('/api/upload/audio/:fileKey', authenticateToken, async (req, res) => {
+    try {
+        const { fileKey } = req.params;
+
+        // 🗑️ Delete from storage
+        const deleteResult = await fileUploadService.deleteFromS3(fileKey);
+
+        if (!deleteResult.success) {
+            return res.status(400).json(deleteResult);
+        }
+
+        // 🗃️ Remove from database
+        const soundsCollection = db.collection('sounds');
+        await soundsCollection.deleteOne({ fileKey: fileKey });
+
+        res.json({
+            success: true,
+            message: 'Audio file deleted successfully'
+        });
+    } catch (error) {
+        console.error('❌ Audio delete error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to delete audio file: ' + error.message
+        });
+    }
+});
+
+// GET /api/upload/audio - Get uploaded audio files
+app.get('/api/upload/audio', authenticateToken, async (req, res) => {
+    try {
+        const soundsCollection = db.collection('sounds');
+        const sounds = await soundsCollection.find({ 
+            uploadedBy: req.user.userId 
+        }).sort({ createdAt: -1 }).toArray();
+
+        res.json({
+            success: true,
+            files: sounds.map(sound => ({
+                _id: sound._id.toString(),
+                name: sound.name,
+                fileKey: sound.fileKey,
+                fileUrl: sound.fileUrl,
+                fileSize: sound.fileSize,
+                duration: sound.duration,
+                category: sound.category,
+                premium: sound.premium,
+                uploadedAt: sound.createdAt,
+                status: sound.status
+            }))
+        });
+    } catch (error) {
+        console.error('❌ Get audio files error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get audio files: ' + error.message
+        });
+    }
+});
 
 // ==================== SLEEP SESSION MANAGEMENT ====================
 
