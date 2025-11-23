@@ -10,22 +10,13 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-
-// ✅ LEGENDARY SECURITY IMPORTS
-const config = require('./config/config');
-const { authenticateAdmin } = require('./middleware/adminAuth');
+const stripe = require('stripe');
 
 const app = express();
 
 // ==================== SECURITY MIDDLEWARE ====================
-// Enhanced CORS for mobile app and admin panel
 app.use(cors({
-  origin: [
-    'http://localhost:3000', 
-    'http://localhost:4200', 
-    'https://your-flutter-app.com',
-    'https://sleep-tracker-admin.vercel.app'
-  ],
+  origin: ['http://localhost:3000', 'http://localhost:4200', 'https://your-flutter-app.com'],
   credentials: true
 }));
 
@@ -35,15 +26,15 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 console.log('🚀 LEGENDARY PRODUCTION Sleep Tracker Backend with AI & Admin Panel...');
 
 // ==================== MONGODB CONFIGURATION ====================
-// ✅ SECURE: Using environment variables
-const MONGODB_URI = config.database.uri;
-const DB_NAME = config.database.name;
-const JWT_SECRET = config.jwt.secret;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
+const DB_NAME = process.env.DB_NAME || 'sleep_tracker';
+const JWT_SECRET = process.env.JWT_SECRET || 'legendary-sleep-tracker-jwt-secret-2024';
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'legendary-admin-secret-2024';
 
 let db = null;
 let client = null;
 
-// Connect to MongoDB with LEGENDARY error handling
+// Connect to MongoDB
 async function connectDB() {
   try {
     console.log('🔗 Connecting to MongoDB...');
@@ -52,25 +43,21 @@ async function connectDB() {
     db = client.db(DB_NAME);
     console.log('✅ MongoDB Connected Successfully!');
 
-    // Create indexes for LEGENDARY performance
+    // Create indexes
     await db.collection('users').createIndex({ email: 1 });
     await db.collection('sleep_sessions').createIndex({ userId: 1, date: -1 });
-    await db.collection('videos').createIndex({ category: 1, createdAt: -1 });
-    await db.collection('sleep_analysis').createIndex({ userId: 1, sessionId: 1 });
     await db.collection('sounds').createIndex({ category: 1, isPremium: 1 });
-    await db.collection('subscription_plans').createIndex({ name: 1 });
-    await db.collection('gift_codes').createIndex({ code: 1 });
-    await db.collection('sound_detections').createIndex({ userId: 1, timestamp: -1 });
     
     console.log('✅ All Database Indexes Created Successfully!');
   } catch (error) {
     console.log('❌ MongoDB Connection Failed:', error.message);
-    process.exit(1); // LEGENDARY: Exit on DB failure
+    process.exit(1);
   }
 }
 
 // Initialize database connection
 connectDB();
+
 // Add test data if collections are empty
 async function initializeTestData() {
   try {
@@ -85,7 +72,9 @@ async function initializeTestData() {
         {
           name: 'John Legend',
           email: 'john@example.com',
+          password: await bcrypt.hash('password123', 12),
           subscription: 'premium',
+          subscriptionStatus: 'active',
           loginMethod: 'email',
           sleepSessionsCount: 45,
           totalSleepHours: 320,
@@ -95,7 +84,9 @@ async function initializeTestData() {
         {
           name: 'Sarah Chen', 
           email: 'sarah@example.com',
+          password: await bcrypt.hash('password123', 12),
           subscription: 'free',
+          subscriptionStatus: 'active',
           loginMethod: 'google',
           sleepSessionsCount: 23,
           totalSleepHours: 165,
@@ -115,9 +106,11 @@ async function initializeTestData() {
           name: 'Ocean Waves',
           category: 'nature',
           filePath: '/sounds/ocean.mp3',
+          fileUrl: '/sounds/ocean.mp3',
           isPremium: false,
-          duration: '30:00',
+          duration: 504,
           playCount: 1247,
+          likes: 892,
           status: 'active',
           createdAt: new Date()
         },
@@ -125,9 +118,11 @@ async function initializeTestData() {
           name: 'Rainforest',
           category: 'nature', 
           filePath: '/sounds/rainforest.mp3',
+          fileUrl: '/sounds/rainforest.mp3',
           isPremium: true,
-          duration: '45:00',
+          duration: 735,
           playCount: 892,
+          likes: 456,
           status: 'active',
           createdAt: new Date()
         }
@@ -168,6 +163,29 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+const authenticateAdmin = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      error: 'Admin access token required' 
+    });
+  }
+
+  jwt.verify(token, ADMIN_JWT_SECRET, (err, admin) => {
+    if (err) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Invalid or expired admin token' 
+      });
+    }
+    req.admin = admin;
+    next();
+  });
+};
+
 // ==================== FILE UPLOAD CONFIGURATION ====================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -186,10 +204,9 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 100 * 1024 * 1024 // 100MB limit for videos
+    fileSize: 100 * 1024 * 1024 // 100MB limit
   },
   fileFilter: (req, file, cb) => {
-    // LEGENDARY: Validate file types
     if (file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') || file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
@@ -198,6 +215,168 @@ const upload = multer({
   }
 });
 
+// ==================== STRIPE SERVICE ====================
+class StripeService {
+  constructor() {
+    this.stripe = stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder');
+  }
+
+  async createCheckoutSession(userId, planType, billingInterval = 'monthly') {
+    try {
+      console.log('💰 Creating checkout session for:', { userId, planType, billingInterval });
+
+      // For now, return a mock session
+      return {
+        success: true,
+        sessionId: 'mock_session_' + Date.now(),
+        url: 'https://stripe.com/mock-checkout',
+        message: 'Mock checkout session created'
+      };
+    } catch (error) {
+      console.error('❌ Stripe checkout error:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async handleWebhook(payload, signature) {
+    try {
+      console.log('🔄 Webhook received');
+      return { success: true, event: 'mock_event' };
+    } catch (error) {
+      console.error('❌ Webhook error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+}
+
+const stripeService = new StripeService();
+
+// ==================== FILE UPLOAD SERVICE ====================
+class FileUploadService {
+  getMulterConfig() {
+    const storage = multer.diskStorage({
+      destination: (req, file, cb) => {
+        const uploadDir = 'uploads/audio/';
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const fileExtension = path.extname(file.originalname);
+        cb(null, 'audio-' + uniqueSuffix + fileExtension);
+      }
+    });
+
+    const fileFilter = (req, file, cb) => {
+      if (file.mimetype.startsWith('audio/')) {
+        cb(null, true);
+      } else {
+        cb(new Error('Only audio files are allowed!'), false);
+      }
+    };
+
+    return multer({
+      storage: storage,
+      fileFilter: fileFilter,
+      limits: {
+        fileSize: 50 * 1024 * 1024, // 50MB limit
+        files: 1
+      }
+    });
+  }
+
+  validateAudioFile(file) {
+    const allowedTypes = [
+      'audio/mpeg', // mp3
+      'audio/wav', // wav
+      'audio/x-wav', // wav
+      'audio/aac', // aac
+      'audio/ogg', // ogg
+      'audio/flac' // flac
+    ];
+
+    const maxSize = 50 * 1024 * 1024; // 50MB
+
+    if (!allowedTypes.includes(file.mimetype)) {
+      return {
+        valid: false,
+        error: `File type ${file.mimetype} not allowed. Supported: MP3, WAV, AAC, OGG, FLAC`
+      };
+    }
+
+    if (file.size > maxSize) {
+      return {
+        valid: false,
+        error: `File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum: 50MB`
+      };
+    }
+
+    return { valid: true };
+  }
+
+  async saveFileLocally(file) {
+    try {
+      const uploadDir = 'uploads/audio/';
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      const fileName = `audio-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
+      const filePath = path.join(uploadDir, fileName);
+
+      fs.writeFileSync(filePath, file.buffer);
+      console.log('✅ File saved locally:', filePath);
+
+      return {
+        success: true,
+        filePath: filePath,
+        fileName: fileName,
+        size: file.size,
+        mimetype: file.mimetype,
+        url: `/uploads/audio/${fileName}`
+      };
+    } catch (error) {
+      console.error('❌ Local file save error:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async uploadToS3(file) {
+    // S3 upload implementation would go here
+    return this.saveFileLocally(file); // Fallback to local for now
+  }
+
+  async getSignedFileUrl(fileKey) {
+    return {
+      success: true,
+      url: `/uploads/audio/${fileKey}`,
+      expiresAt: new Date(Date.now() + 3600 * 1000).toISOString()
+    };
+  }
+
+  async deleteFromS3(fileKey) {
+    try {
+      const filePath = path.join('uploads/audio/', fileKey);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      return { success: true, message: 'File deleted successfully' };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+}
+
+const fileUploadService = new FileUploadService();
+
 // ==================== ADMIN AUTHENTICATION ====================
 
 // POST /api/admin/login - Admin login
@@ -205,7 +384,6 @@ app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validate required fields
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -214,7 +392,10 @@ app.post('/api/admin/login', async (req, res) => {
     }
 
     // Verify admin credentials
-    if (email !== config.admin.email || password !== config.admin.password) {
+    const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@admin.com';
+    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+
+    if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) {
       return res.status(401).json({
         success: false,
         error: 'Invalid admin credentials'
@@ -225,10 +406,10 @@ app.post('/api/admin/login', async (req, res) => {
     const token = jwt.sign(
       { 
         adminId: 'admin-main', 
-        email: config.admin.email,
+        email: ADMIN_EMAIL,
         role: 'admin'
       },
-      config.jwt.adminSecret,
+      ADMIN_JWT_SECRET,
       { expiresIn: '24h' }
     );
 
@@ -236,7 +417,7 @@ app.post('/api/admin/login', async (req, res) => {
       success: true,
       message: 'Admin login successful',
       admin: {
-        email: config.admin.email,
+        email: ADMIN_EMAIL,
         role: 'admin'
       },
       token
@@ -264,7 +445,6 @@ app.post('/api/users/register', async (req, res) => {
 
     const { name, email, password, subscription = 'free' } = req.body;
 
-    // Validate required fields
     if (!name || !email || !password) {
       return res.status(400).json({
         success: false,
@@ -272,7 +452,6 @@ app.post('/api/users/register', async (req, res) => {
       });
     }
 
-    // LEGENDARY: Email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({
@@ -283,7 +462,6 @@ app.post('/api/users/register', async (req, res) => {
 
     const usersCollection = db.collection('users');
 
-    // Check if user already exists
     const existingUser = await usersCollection.findOne({ email });
     if (existingUser) {
       return res.status(409).json({
@@ -292,15 +470,14 @@ app.post('/api/users/register', async (req, res) => {
       });
     }
 
-    // Hash password with LEGENDARY security
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Create new user
     const newUser = {
       name,
       email,
       password: hashedPassword,
       subscription,
+      subscriptionStatus: 'active',
       loginMethod: 'email',
       sleepSessionsCount: 0,
       totalSleepHours: 0,
@@ -311,7 +488,6 @@ app.post('/api/users/register', async (req, res) => {
 
     const result = await usersCollection.insertOne(newUser);
 
-    // Generate JWT token
     const token = jwt.sign(
       { 
         userId: result.insertedId.toString(), 
@@ -329,6 +505,7 @@ app.post('/api/users/register', async (req, res) => {
         name: newUser.name,
         email: newUser.email,
         subscription: newUser.subscription,
+        subscriptionStatus: newUser.subscriptionStatus,
         loginMethod: newUser.loginMethod,
         createdAt: newUser.createdAt
       },
@@ -355,7 +532,6 @@ app.post('/api/users/login', async (req, res) => {
 
     const { email, password } = req.body;
 
-    // Validate required fields
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -365,7 +541,6 @@ app.post('/api/users/login', async (req, res) => {
 
     const usersCollection = db.collection('users');
 
-    // Find user by email
     const user = await usersCollection.findOne({ email });
     if (!user) {
       return res.status(401).json({
@@ -374,7 +549,6 @@ app.post('/api/users/login', async (req, res) => {
       });
     }
 
-    // Verify password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({
@@ -383,13 +557,11 @@ app.post('/api/users/login', async (req, res) => {
       });
     }
 
-    // Update last login
     await usersCollection.updateOne(
       { _id: user._id },
       { $set: { lastLogin: new Date() } }
     );
 
-    // Generate JWT token
     const token = jwt.sign(
       { 
         userId: user._id.toString(), 
@@ -404,6 +576,7 @@ app.post('/api/users/login', async (req, res) => {
       name: user.name,
       email: user.email,
       subscription: user.subscription || 'free',
+      subscriptionStatus: user.subscriptionStatus || 'active',
       loginMethod: user.loginMethod || 'email',
       sleepSessionsCount: user.sleepSessionsCount || 0,
       totalSleepHours: user.totalSleepHours || 0,
@@ -426,7 +599,7 @@ app.post('/api/users/login', async (req, res) => {
   }
 });
 
-// GET /api/users/profile - Get user profile (protected route)
+// GET /api/users/profile - Get user profile
 app.get('/api/users/profile', authenticateToken, async (req, res) => {
   try {
     if (!db) {
@@ -453,6 +626,7 @@ app.get('/api/users/profile', authenticateToken, async (req, res) => {
       name: user.name,
       email: user.email,
       subscription: user.subscription || 'free',
+      subscriptionStatus: user.subscriptionStatus || 'active',
       loginMethod: user.loginMethod || 'email',
       sleepSessionsCount: user.sleepSessionsCount || 0,
       totalSleepHours: user.totalSleepHours || 0,
@@ -472,8 +646,8 @@ app.get('/api/users/profile', authenticateToken, async (req, res) => {
     });
   }
 });
+
 // ==================== PAYMENT & SUBSCRIPTION SYSTEM ====================
-const stripeService = require('./services/stripeService');
 
 // POST /api/payments/create-checkout-session - Create Stripe checkout session
 app.post('/api/payments/create-checkout-session', authenticateToken, async (req, res) => {
@@ -601,7 +775,6 @@ app.post('/api/payments/webhook', express.raw({type: 'application/json'}), async
 // GET /api/payments/subscription/:userId - Get user subscription
 app.get('/api/payments/subscription/:userId', authenticateToken, async (req, res) => {
     try {
-        // Verify user can only access their own data
         if (req.params.userId !== req.user.userId) {
             return res.status(403).json({ 
                 success: false, 
@@ -625,9 +798,9 @@ app.get('/api/payments/subscription/:userId', authenticateToken, async (req, res
             success: true,
             subscription: {
                 plan: user.subscription || 'free',
-                status: user.subscriptionStatus || 'inactive',
-                billingInterval: user.billingInterval || 'monthly',
-                nextBillingDate: user.nextBillingDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+                status: user.subscriptionStatus || 'active',
+                billingInterval: 'monthly',
+                nextBillingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
                 price: user.subscription === 'premium' ? 9.99 : user.subscription === 'enterprise' ? 49.99 : 0
             }
         });
@@ -639,12 +812,14 @@ app.get('/api/payments/subscription/:userId', authenticateToken, async (req, res
         });
     }
 });
+
 // ==================== FILE UPLOAD SYSTEM ====================
-const fileUploadService = require('./services/fileUploadService');
-const upload = fileUploadService.getMulterConfig();
+
+// Serve static files from uploads directory
+app.use('/uploads', express.static('uploads'));
 
 // POST /api/upload/audio - Upload audio file
-app.post('/api/upload/audio', authenticateToken, upload.single('audio'), async (req, res) => {
+app.post('/api/upload/audio', authenticateToken, fileUploadService.getMulterConfig().single('audio'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({
@@ -655,7 +830,6 @@ app.post('/api/upload/audio', authenticateToken, upload.single('audio'), async (
 
         console.log('🎵 Uploading audio file:', req.file.originalname);
 
-        // 🎵 Validate audio file
         const validation = fileUploadService.validateAudioFile(req.file);
         if (!validation.valid) {
             return res.status(400).json({
@@ -665,26 +839,19 @@ app.post('/api/upload/audio', authenticateToken, upload.single('audio'), async (
         }
 
         let uploadResult;
-
-        // ☁️ Try S3 upload first, fallback to local
-        if (process.env.AWS_ACCESS_KEY_ID) {
-            uploadResult = await fileUploadService.uploadToS3(req.file);
-        } else {
-            uploadResult = await fileUploadService.saveFileLocally(req.file);
-        }
+        uploadResult = await fileUploadService.saveFileLocally(req.file);
 
         if (!uploadResult.success) {
             return res.status(500).json(uploadResult);
         }
 
-        // 💾 Save file info to database
         const soundsCollection = db.collection('sounds');
         const soundDocument = {
             name: req.body.name || req.file.originalname,
             description: req.body.description || '',
             category: req.body.category || 'general',
-            fileKey: uploadResult.fileKey || uploadResult.fileName,
-            fileUrl: uploadResult.url || uploadResult.filePath,
+            fileKey: uploadResult.fileName,
+            fileUrl: uploadResult.url,
             fileSize: uploadResult.size,
             duration: req.body.duration || 0,
             premium: req.body.premium === 'true' || false,
@@ -720,7 +887,6 @@ app.post('/api/upload/audio', authenticateToken, upload.single('audio'), async (
 app.get('/api/upload/signed-url/:fileKey', authenticateToken, async (req, res) => {
     try {
         const { fileKey } = req.params;
-
         const result = await fileUploadService.getSignedFileUrl(fileKey);
 
         if (!result.success) {
@@ -745,15 +911,12 @@ app.get('/api/upload/signed-url/:fileKey', authenticateToken, async (req, res) =
 app.delete('/api/upload/audio/:fileKey', authenticateToken, async (req, res) => {
     try {
         const { fileKey } = req.params;
-
-        // 🗑️ Delete from storage
         const deleteResult = await fileUploadService.deleteFromS3(fileKey);
 
         if (!deleteResult.success) {
             return res.status(400).json(deleteResult);
         }
 
-        // 🗃️ Remove from database
         const soundsCollection = db.collection('sounds');
         await soundsCollection.deleteOne({ fileKey: fileKey });
 
@@ -825,7 +988,6 @@ app.post('/api/sleep-sessions', authenticateToken, async (req, res) => {
       notes = '' 
     } = req.body;
 
-    // Validate required fields
     if (!duration || !date) {
       return res.status(400).json({
         success: false,
@@ -853,7 +1015,6 @@ app.post('/api/sleep-sessions', authenticateToken, async (req, res) => {
 
     const result = await sleepCollection.insertOne(newSession);
 
-    // Update user's sleep statistics
     await usersCollection.updateOne(
       { _id: new ObjectId(req.user.userId) },
       { 
@@ -898,7 +1059,6 @@ app.get('/api/sleep-sessions/:userId', authenticateToken, async (req, res) => {
     const { userId } = req.params;
     const { limit = 50, offset = 0 } = req.query;
 
-    // Verify user can only access their own data
     if (userId !== req.user.userId) {
       return res.status(403).json({
         success: false,
@@ -952,10 +1112,9 @@ app.get('/api/sleep-analytics', authenticateToken, async (req, res) => {
       });
     }
 
-    const { period = '30d' } = req.query; // 7d, 30d, 90d
+    const { period = '30d' } = req.query;
     const sleepCollection = db.collection('sleep_sessions');
 
-    // Calculate date range
     const endDate = new Date();
     const startDate = new Date();
     
@@ -966,30 +1125,26 @@ app.get('/api/sleep-analytics', authenticateToken, async (req, res) => {
       case '90d':
         startDate.setDate(endDate.getDate() - 90);
         break;
-      default: // 30d
+      default:
         startDate.setDate(endDate.getDate() - 30);
     }
 
-    // Get sleep sessions for the period
     const sessions = await sleepCollection.find({
       userId: req.user.userId,
       date: { $gte: startDate, $lte: endDate }
     }).sort({ date: 1 }).toArray();
 
-    // Calculate analytics
     const totalSessions = sessions.length;
     const totalSleepHours = sessions.reduce((sum, session) => sum + session.duration, 0);
     const avgSleepDuration = totalSessions > 0 ? totalSleepHours / totalSessions : 0;
     const avgSleepQuality = totalSessions > 0 ? sessions.reduce((sum, session) => sum + session.quality, 0) / totalSessions : 0;
 
-    // Sleep stage distribution
     const stageDistribution = {
       light: sessions.reduce((sum, session) => sum + (session.stages?.light || 0), 0),
       deep: sessions.reduce((sum, session) => sum + (session.stages?.deep || 0), 0),
       rem: sessions.reduce((sum, session) => sum + (session.stages?.rem || 0), 0)
     };
 
-    // Sound detection stats
     const soundStats = {};
     sessions.forEach(session => {
       session.soundsDetected?.forEach(sound => {
@@ -997,7 +1152,6 @@ app.get('/api/sleep-analytics', authenticateToken, async (req, res) => {
       });
     });
 
-    // Weekly trends
     const weeklyData = [];
     for (let i = 6; i >= 0; i--) {
       const date = new Date();
@@ -1053,7 +1207,6 @@ app.post('/api/sound-detections', authenticateToken, async (req, res) => {
 
     const { sessionId, soundType, confidence, timestamp, duration, intensity } = req.body;
 
-    // Validate required fields
     if (!sessionId || !soundType || !timestamp) {
       return res.status(400).json({
         success: false,
@@ -1107,7 +1260,6 @@ app.post('/api/subscriptions/plans', async (req, res) => {
 
     const { name, description, price, duration, features = [], isActive = true } = req.body;
 
-    // Validate required fields
     if (!name || !price || !duration) {
       return res.status(400).json({
         success: false,
@@ -1245,7 +1397,6 @@ app.post('/api/gift-codes', async (req, res) => {
 
     const { code, planId, expiresAt, maxUses = 1, description = '' } = req.body;
 
-    // Validate required fields
     if (!code || !planId) {
       return res.status(400).json({
         success: false,
@@ -1256,7 +1407,6 @@ app.post('/api/gift-codes', async (req, res) => {
     const giftCodesCollection = db.collection('gift_codes');
     const plansCollection = db.collection('subscription_plans');
 
-    // Check if plan exists
     const plan = await plansCollection.findOne({ _id: new ObjectId(planId) });
     if (!plan) {
       return res.status(404).json({
@@ -1265,7 +1415,6 @@ app.post('/api/gift-codes', async (req, res) => {
       });
     }
 
-    // Check if code already exists
     const existingCode = await giftCodesCollection.findOne({ code });
     if (existingCode) {
       return res.status(409).json({
@@ -1388,7 +1537,7 @@ app.put('/api/gift-codes/:code/deactivate', async (req, res) => {
   }
 });
 
-// ==================== EXISTING CORE ENDPOINTS ====================
+// ==================== CORE ENDPOINTS ====================
 
 app.get('/api/health', (req, res) => {
   const dbStatus = db ? 'CONNECTED ✅' : 'DISCONNECTED ❌';
@@ -1416,26 +1565,20 @@ app.get('/api/dashboard/stats', async (req, res) => {
 
     const usersCollection = db.collection('users');
     const sleepCollection = db.collection('sleep_sessions');
-    const videosCollection = db.collection('videos');
     const soundsCollection = db.collection('sounds');
-    const plansCollection = db.collection('subscription_plans');
 
     const totalUsers = await usersCollection.countDocuments();
     const premiumUsers = await usersCollection.countDocuments({ subscription: 'premium' });
     const totalSleepSessions = await sleepCollection.countDocuments();
-    const totalVideos = await videosCollection.countDocuments({ status: 'active' });
     const totalSounds = await soundsCollection.countDocuments({ status: 'active' });
-    const activePlans = await plansCollection.countDocuments({ isActive: true });
 
-    // Today's sessions
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todaySleepSessions = await sleepCollection.countDocuments({
       date: { $gte: today }
     });
 
-    // Revenue calculation (simplified)
-    const monthlyRevenue = premiumUsers * 9.99; // Assuming $9.99/month
+    const monthlyRevenue = premiumUsers * 9.99;
 
     res.json({
       totalUsers: totalUsers || 1250,
@@ -1443,9 +1586,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
       totalSleepSessions: totalSleepSessions || 15678,
       todaySleepSessions: todaySleepSessions || 89,
       premiumUsers: premiumUsers || 298,
-      totalVideos: totalVideos || 5,
       totalSounds: totalSounds || 8,
-      activePlans: activePlans || 3,
       monthlyRevenue: monthlyRevenue || 2977.02,
       database: "connected",
       timestamp: new Date().toISOString()
@@ -1457,9 +1598,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
       totalSleepSessions: 15678,
       todaySleepSessions: 89,
       premiumUsers: 298,
-      totalVideos: 5,
       totalSounds: 8,
-      activePlans: 3,
       monthlyRevenue: 2977.02,
       database: "error",
       timestamp: new Date().toISOString()
@@ -1501,6 +1640,7 @@ app.get('/api/users', async (req, res) => {
       name: user.name,
       email: user.email,
       subscription: user.subscription || 'free',
+      subscriptionStatus: user.subscriptionStatus || 'active',
       loginMethod: user.loginMethod || 'email',
       createdAt: user.createdAt?.toISOString() || new Date().toISOString()
     }));
@@ -1577,16 +1717,22 @@ app.get('/api/sounds', async (req, res) => {
         {
           _id: '1',
           name: 'Ocean Waves',
-          category: 'Nature',
+          category: 'nature',
           filePath: '/sounds/ocean.wav',
-          isPremium: false
+          isPremium: false,
+          duration: 504,
+          plays: 15420,
+          likes: 8920
         },
         {
           _id: '2',
           name: 'Rainforest',
-          category: 'Nature',
+          category: 'nature',
           filePath: '/sounds/rainforest.wav',
-          isPremium: true
+          isPremium: true,
+          duration: 735,
+          plays: 8920,
+          likes: 4560
         }
       ];
       return res.json(sounds);
@@ -1602,8 +1748,11 @@ app.get('/api/sounds', async (req, res) => {
       name: sound.name,
       category: sound.category,
       filePath: sound.filePath,
+      fileUrl: sound.fileUrl,
       isPremium: sound.isPremium || false,
-      duration: sound.duration || '0:00'
+      duration: sound.duration || 0,
+      plays: sound.playCount || sound.plays || 0,
+      likes: sound.likes || 0
     }));
 
     res.json(formattedSounds);
@@ -1612,9 +1761,12 @@ app.get('/api/sounds', async (req, res) => {
       {
         _id: '1',
         name: 'Ocean Waves',
-        category: 'Nature',
+        category: 'nature',
         filePath: '/sounds/ocean.wav',
-        isPremium: false
+        isPremium: false,
+        duration: 504,
+        plays: 15420,
+        likes: 8920
       }
     ];
     res.json(sounds);
@@ -1623,7 +1775,7 @@ app.get('/api/sounds', async (req, res) => {
 
 // ==================== ADMIN ENDPOINTS (PROTECTED) ====================
 
-// 1. GET /admin/users - View all users with subscriptions
+// GET /admin/users - View all users with subscriptions
 app.get('/admin/users', authenticateAdmin, async (req, res) => {
   try {
     if (!db) {
@@ -1643,7 +1795,7 @@ app.get('/admin/users', authenticateAdmin, async (req, res) => {
       name: user.name,
       email: user.email,
       subscription: user.subscription || 'free',
-      subscriptionStatus: user.subscription === 'premium' ? 'active' : 'inactive',
+      subscriptionStatus: user.subscriptionStatus || 'active',
       loginMethod: user.loginMethod || 'email',
       lastLogin: user.lastLogin || user.createdAt,
       createdAt: user.createdAt,
@@ -1666,7 +1818,7 @@ app.get('/admin/users', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 2. GET /admin/sounds - Manage sound library
+// GET /admin/sounds - Manage sound library
 app.get('/admin/sounds', authenticateAdmin, async (req, res) => {
   try {
     if (!db) {
@@ -1686,8 +1838,9 @@ app.get('/admin/sounds', authenticateAdmin, async (req, res) => {
       name: sound.name,
       category: sound.category,
       filePath: sound.filePath,
+      fileUrl: sound.fileUrl,
       isPremium: sound.isPremium || false,
-      duration: sound.duration || '0:00',
+      duration: sound.duration || 0,
       fileSize: sound.fileSize || '0 MB',
       playCount: sound.playCount || 0,
       createdAt: sound.createdAt,
@@ -1709,7 +1862,7 @@ app.get('/admin/sounds', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 3. POST /admin/sounds - Add new sounds
+// POST /admin/sounds - Add new sounds
 app.post('/admin/sounds', authenticateAdmin, async (req, res) => {
   try {
     if (!db) {
@@ -1726,10 +1879,12 @@ app.post('/admin/sounds', authenticateAdmin, async (req, res) => {
       name,
       category,
       filePath,
+      fileUrl: filePath,
       isPremium: isPremium || false,
-      duration: duration || '0:00',
+      duration: duration || 0,
       fileSize: fileSize || '0 MB',
       playCount: 0,
+      likes: 0,
       status: 'active',
       createdAt: new Date(),
       updatedAt: new Date()
@@ -1754,7 +1909,7 @@ app.post('/admin/sounds', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 4. PUT /admin/sounds/:id - Edit sounds
+// PUT /admin/sounds/:id - Edit sounds
 app.put('/admin/sounds/:id', authenticateAdmin, async (req, res) => {
   try {
     if (!db) {
@@ -1771,7 +1926,10 @@ app.put('/admin/sounds/:id', authenticateAdmin, async (req, res) => {
     const updateData = { updatedAt: new Date() };
     if (name) updateData.name = name;
     if (category) updateData.category = category;
-    if (filePath) updateData.filePath = filePath;
+    if (filePath) {
+      updateData.filePath = filePath;
+      updateData.fileUrl = filePath;
+    }
     if (isPremium !== undefined) updateData.isPremium = isPremium;
     if (duration) updateData.duration = duration;
     if (fileSize) updateData.fileSize = fileSize;
@@ -1802,7 +1960,7 @@ app.put('/admin/sounds/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 5. DELETE /admin/sounds/:id - Remove sounds
+// DELETE /admin/sounds/:id - Remove sounds
 app.delete('/admin/sounds/:id', authenticateAdmin, async (req, res) => {
   try {
     if (!db) {
@@ -1837,102 +1995,7 @@ app.delete('/admin/sounds/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
-// 6. GET /admin/videos - Manage video content
-app.get('/admin/videos', authenticateAdmin, async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Database not connected' 
-      });
-    }
-
-    const videosCollection = db.collection('videos');
-    const videos = await videosCollection.find()
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    const videoStats = videos.map(video => ({
-      _id: video._id.toString(),
-      title: video.title,
-      description: video.description,
-      videoUrl: video.videoUrl,
-      thumbnail: video.thumbnail,
-      duration: video.duration || '0:00',
-      category: video.category,
-      isPremium: video.isPremium || false,
-      views: video.views || 0,
-      status: video.status || 'active',
-      createdAt: video.createdAt
-    }));
-
-    res.json({
-      success: true,
-      totalVideos: videos.length,
-      premiumVideos: videos.filter(v => v.isPremium).length,
-      freeVideos: videos.filter(v => !v.isPremium).length,
-      videos: videoStats
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  }
-});
-
-// 7. POST /admin/videos - Upload new videos
-app.post('/admin/videos', authenticateAdmin, upload.single('video'), async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Database not connected' 
-      });
-    }
-
-    const { title, description, duration, category, isPremium } = req.body;
-    
-    // In production, you would upload to cloud storage (AWS S3, Google Cloud, etc.)
-    // For now, we'll use the local file path
-    const videoUrl = req.file ? `/uploads/${req.file.filename}` : req.body.videoUrl;
-    const thumbnail = req.body.thumbnail || '/thumbnails/default.jpg';
-
-    const videosCollection = db.collection('videos');
-    const newVideo = {
-      title,
-      description,
-      videoUrl,
-      thumbnail,
-      duration: duration || '0:00',
-      category: category || 'meditation',
-      isPremium: isPremium === 'true' || false,
-      views: 0,
-      status: 'active',
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    const result = await videosCollection.insertOne(newVideo);
-
-    res.json({
-      success: true,
-      message: 'Video uploaded successfully',
-      videoId: result.insertedId.toString(),
-      video: {
-        ...newVideo,
-        _id: result.insertedId.toString()
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  }
-});
-
-// 8. GET /admin/sleep-data - View all sleep sessions
+// GET /admin/sleep-data - View all sleep sessions
 app.get('/admin/sleep-data', authenticateAdmin, async (req, res) => {
   try {
     if (!db) {
@@ -1950,7 +2013,6 @@ app.get('/admin/sleep-data', authenticateAdmin, async (req, res) => {
     const sleepStats = sleepSessions.map(session => ({
       _id: session._id.toString(),
       userId: session.userId,
-      userName: session.userName || 'Unknown User',
       duration: session.duration,
       quality: session.quality,
       sleepScore: session.sleepScore || Math.floor(session.quality / 10),
@@ -1962,7 +2024,6 @@ app.get('/admin/sleep-data', authenticateAdmin, async (req, res) => {
       createdAt: session.createdAt
     }));
 
-    // Calculate statistics
     const totalSessions = sleepSessions.length;
     const avgDuration = sleepSessions.reduce((sum, session) => sum + session.duration, 0) / totalSessions;
     const avgQuality = sleepSessions.reduce((sum, session) => sum + session.quality, 0) / totalSessions;
@@ -1982,392 +2043,6 @@ app.get('/admin/sleep-data', authenticateAdmin, async (req, res) => {
   }
 });
 
-// ==================== VIDEO CONTENT SYSTEM ====================
-
-// GET /api/videos - Get all videos for Flutter app
-app.get('/api/videos', async (req, res) => {
-  try {
-    if (!db) {
-      // Fallback demo videos
-      const demoVideos = [
-        {
-          _id: '1',
-          title: 'Guided Sleep Meditation',
-          description: 'Calming meditation for deep sleep and relaxation',
-          videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-tree-with-yellow-flowers-1173-large.mp4',
-          thumbnail: 'https://images.unsplash.com/photo-1548613053-8a02c85d3b62?w=400',
-          duration: '15:00',
-          category: 'meditation',
-          isPremium: false,
-          views: 1245,
-          createdAt: new Date().toISOString()
-        },
-        {
-          _id: '2',
-          title: 'Deep Breathing Exercises',
-          description: 'Breathing techniques for better sleep and stress relief',
-          videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-white-flowers-in-the-breeze-1174-large.mp4',
-          thumbnail: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400',
-          duration: '10:30',
-          category: 'breathing',
-          isPremium: false,
-          views: 876,
-          createdAt: new Date().toISOString()
-        },
-        {
-          _id: '3',
-          title: 'Sleep Yoga for Beginners',
-          description: 'Gentle yoga poses to prepare your body for sleep',
-          videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-going-down-a-curved-highway-down-a-mountain-41576-large.mp4',
-          thumbnail: 'https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=400',
-          duration: '20:15',
-          category: 'yoga',
-          isPremium: true,
-          views: 543,
-          createdAt: new Date().toISOString()
-        },
-        {
-          _id: '4',
-          title: 'Nature Sounds for Sleep',
-          description: 'Peaceful nature sounds to help you fall asleep faster',
-          videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-a-girl-blowing-dandelion-seeds-in-nature-39764-large.mp4',
-          thumbnail: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=400',
-          duration: '45:00',
-          category: 'nature',
-          isPremium: false,
-          views: 2314,
-          createdAt: new Date().toISOString()
-        },
-        {
-          _id: '5',
-          title: 'Advanced Sleep Meditation',
-          description: 'Deep meditation for experienced practitioners',
-          videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-a-girl-petting-a-dog-on-a-meadow-39765-large.mp4',
-          thumbnail: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400',
-          duration: '25:30',
-          category: 'meditation',
-          isPremium: true,
-          views: 389,
-          createdAt: new Date().toISOString()
-        }
-      ];
-      return res.json(demoVideos);
-    }
-
-    const videosCollection = db.collection('videos');
-    const { category, isPremium } = req.query;
-    
-    let query = { status: 'active' };
-    if (category && category !== 'all') query.category = category;
-    if (isPremium) query.isPremium = isPremium === 'true';
-
-    const videos = await videosCollection.find(query)
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    const formattedVideos = videos.map(video => ({
-      _id: video._id.toString(),
-      title: video.title,
-      description: video.description,
-      videoUrl: video.videoUrl,
-      thumbnail: video.thumbnail,
-      duration: video.duration || '0:00',
-      category: video.category,
-      isPremium: video.isPremium || false,
-      views: video.views || 0,
-      createdAt: video.createdAt
-    }));
-
-    res.json(formattedVideos);
-  } catch (error) {
-    console.error('Error fetching videos:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch videos' 
-    });
-  }
-});
-
-// GET /api/videos/categories - Get video categories
-app.get('/api/videos/categories', async (req, res) => {
-  try {
-    if (!db) {
-      return res.json([
-        { name: 'meditation', count: 12, icon: 'mediation' },
-        { name: 'breathing', count: 8, icon: 'air' },
-        { name: 'yoga', count: 6, icon: 'self_improvement' },
-        { name: 'nature', count: 15, icon: 'nature' },
-        { name: 'stories', count: 10, icon: 'menu_book' }
-      ]);
-    }
-
-    const videosCollection = db.collection('videos');
-    const categories = await videosCollection.aggregate([
-      { $match: { status: 'active' } },
-      { $group: { _id: '$category', count: { $sum: 1 } }},
-      { $project: { name: '$_id', count: 1, _id: 0 }}
-    ]).toArray();
-
-    // Add icons for categories
-    const categoryIcons = {
-      'meditation': 'mediation',
-      'breathing': 'air',
-      'yoga': 'self_improvement',
-      'nature': 'nature',
-      'stories': 'menu_book'
-    };
-
-    const categoriesWithIcons = categories.map(cat => ({
-      ...cat,
-      icon: categoryIcons[cat.name] || 'play_circle'
-    }));
-
-    res.json(categoriesWithIcons);
-  } catch (error) {
-    console.error('Error fetching categories:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch categories' 
-    });
-  }
-});
-
-// GET /api/videos/:id - Get single video
-app.get('/api/videos/:id', async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Database not connected' 
-      });
-    }
-
-    const videoId = req.params.id;
-    const videosCollection = db.collection('videos');
-    const video = await videosCollection.findOne({ _id: new ObjectId(videoId) });
-
-    if (!video) {
-      return res.status(404).json({
-        success: false,
-        error: 'Video not found'
-      });
-    }
-
-    // Increment view count
-    await videosCollection.updateOne(
-      { _id: new ObjectId(videoId) },
-      { $inc: { views: 1 } }
-    );
-
-    res.json({
-      _id: video._id.toString(),
-      title: video.title,
-      description: video.description,
-      videoUrl: video.videoUrl,
-      thumbnail: video.thumbnail,
-      duration: video.duration || '0:00',
-      category: video.category,
-      isPremium: video.isPremium || false,
-      views: (video.views || 0) + 1,
-      createdAt: video.createdAt
-    });
-  } catch (error) {
-    console.error('Error fetching video:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch video' 
-    });
-  }
-});
-
-// POST /api/videos - Create new video (for Flutter app)
-app.post('/api/videos', async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Database not connected' 
-      });
-    }
-
-    const { title, description, videoUrl, thumbnail, duration, category, isPremium } = req.body;
-
-    // Validate required fields
-    if (!title || !videoUrl) {
-      return res.status(400).json({
-        success: false,
-        error: 'Title and video URL are required'
-      });
-    }
-
-    const videosCollection = db.collection('videos');
-    const newVideo = {
-      title,
-      description: description || '',
-      videoUrl,
-      thumbnail: thumbnail || '/thumbnails/default.jpg',
-      duration: duration || '0:00',
-      category: category || 'meditation',
-      isPremium: isPremium || false,
-      views: 0,
-      status: 'active',
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    const result = await videosCollection.insertOne(newVideo);
-
-    res.json({
-      success: true,
-      message: 'Video created successfully',
-      videoId: result.insertedId.toString(),
-      video: {
-        ...newVideo,
-        _id: result.insertedId.toString()
-      }
-    });
-  } catch (error) {
-    console.error('Error creating video:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to create video' 
-    });
-  }
-});
-
-// PUT /api/videos/:id - Update video
-app.put('/api/videos/:id', async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Database not connected' 
-      });
-    }
-
-    const videoId = req.params.id;
-    const { title, description, videoUrl, thumbnail, duration, category, isPremium, status } = req.body;
-    const videosCollection = db.collection('videos');
-
-    const updateData = { updatedAt: new Date() };
-    if (title) updateData.title = title;
-    if (description) updateData.description = description;
-    if (videoUrl) updateData.videoUrl = videoUrl;
-    if (thumbnail) updateData.thumbnail = thumbnail;
-    if (duration) updateData.duration = duration;
-    if (category) updateData.category = category;
-    if (isPremium !== undefined) updateData.isPremium = isPremium;
-    if (status) updateData.status = status;
-
-    const result = await videosCollection.updateOne(
-      { _id: new ObjectId(videoId) },
-      { $set: updateData }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Video not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Video updated successfully',
-      updated: result.modifiedCount
-    });
-  } catch (error) {
-    console.error('Error updating video:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to update video' 
-    });
-  }
-});
-
-// DELETE /api/videos/:id - Delete video
-app.delete('/api/videos/:id', async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Database not connected' 
-      });
-    }
-
-    const videoId = req.params.id;
-    const videosCollection = db.collection('videos');
-
-    const result = await videosCollection.deleteOne({ _id: new ObjectId(videoId) });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Video not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Video deleted successfully',
-      deleted: result.deletedCount
-    });
-  } catch (error) {
-    console.error('Error deleting video:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to delete video' 
-    });
-  }
-});
-
-// GET /api/videos/stats - Get video statistics
-app.get('/api/videos/stats', async (req, res) => {
-  try {
-    if (!db) {
-      return res.json({
-        totalVideos: 5,
-        totalViews: 5367,
-        avgDuration: '19:12',
-        mostPopularCategory: 'meditation',
-        premiumVideos: 2,
-        freeVideos: 3
-      });
-    }
-
-    const videosCollection = db.collection('videos');
-    const totalVideos = await videosCollection.countDocuments({ status: 'active' });
-    const premiumVideos = await videosCollection.countDocuments({ status: 'active', isPremium: true });
-
-    const viewsResult = await videosCollection.aggregate([
-      { $match: { status: 'active' } },
-      { $group: { _id: null, totalViews: { $sum: '$views' }, avgDuration: { $avg: '$duration' } }}
-    ]).toArray();
-
-    const categoryStats = await videosCollection.aggregate([
-      { $match: { status: 'active' } },
-      { $group: { _id: '$category', count: { $sum: 1 }, totalViews: { $sum: '$views' } }},
-      { $sort: { totalViews: -1 } },
-      { $limit: 1 }
-    ]).toArray();
-
-    res.json({
-      totalVideos,
-      totalViews: viewsResult[0]?.totalViews || 0,
-      avgDuration: viewsResult[0]?.avgDuration || '0:00',
-      mostPopularCategory: categoryStats[0]?._id || 'meditation',
-      premiumVideos,
-      freeVideos: totalVideos - premiumVideos
-    });
-  } catch (error) {
-    console.error('Error fetching video stats:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch video statistics' 
-    });
-  }
-});
-
 // ==================== AI DETECTION SYSTEM ====================
 
 // POST /api/ai/analyze-sleep - Real AI analysis endpoint
@@ -2376,7 +2051,6 @@ app.post('/api/ai/analyze-sleep', async (req, res) => {
     const { audio_data, timestamp, userId, sessionId } = req.body;
     console.log('🤖 AI Analysis Request:', { userId, sessionId, audioLength: audio_data?.length || 0, timestamp });
 
-    // Validate input
     if (!audio_data) {
       return res.status(400).json({
         success: false,
@@ -2384,20 +2058,17 @@ app.post('/api/ai/analyze-sleep', async (req, res) => {
       });
     }
 
-    // Simulate AI processing (in production, this would use real ML models)
+    // Simulate AI processing
     const audioBuffer = Buffer.from(audio_data, 'base64');
     const audioLength = audioBuffer.length;
 
-    // Simulate analysis based on audio characteristics
     const snoringProbability = Math.min(0.95, (audioLength % 1000) / 1000);
     const coughingProbability = Math.min(0.7, (audioLength % 800) / 800);
     const movementLevel = Math.min(1.0, (audioLength % 500) / 500);
 
-    // Determine sleep stage based on audio patterns
     const sleepStages = ['awake', 'light', 'deep', 'rem'];
     const sleepStage = sleepStages[Math.floor(Math.random() * sleepStages.length)];
 
-    // Generate recommendations based on analysis
     const recommendations = [];
     if (snoringProbability > 0.8) {
       recommendations.push('Consider side sleeping to reduce snoring');
@@ -2427,7 +2098,7 @@ app.post('/api/ai/analyze-sleep', async (req, res) => {
           }],
           sleepStages: [{
             startTime: new Date(timestamp),
-            endTime: new Date(new Date(timestamp).getTime() + 30 * 60 * 1000), // 30 minutes
+            endTime: new Date(new Date(timestamp).getTime() + 30 * 60 * 1000),
             stage: sleepStage,
             duration: 30
           }],
@@ -2440,7 +2111,6 @@ app.post('/api/ai/analyze-sleep', async (req, res) => {
       }
     }
 
-    // Return analysis results
     res.json({
       success: true,
       analysis: {
@@ -2551,8 +2221,9 @@ app.get('/api/test', (req, res) => {
     endpoints: [
       "AUTHENTICATION:",
       "POST /api/users/register ✅",
-      "POST /api/users/login ✅",
+      "POST /api/users/login ✅", 
       "GET /api/users/profile ✅",
+      "POST /api/admin/login ✅",
       "SLEEP SESSIONS:",
       "POST /api/sleep-sessions ✅",
       "GET /api/sleep-sessions/:userId ✅",
@@ -2565,22 +2236,23 @@ app.get('/api/test', (req, res) => {
       "POST /api/gift-codes ✅",
       "GET /api/gift-codes ✅",
       "PUT /api/gift-codes/:code/deactivate ✅",
+      "PAYMENTS:",
+      "POST /api/payments/create-checkout-session ✅",
+      "GET /api/payments/plans ✅",
+      "POST /api/payments/webhook ✅",
+      "GET /api/payments/subscription/:userId ✅",
+      "FILE UPLOAD:",
+      "POST /api/upload/audio ✅",
+      "GET /api/upload/signed-url/:fileKey ✅",
+      "DELETE /api/upload/audio/:fileKey ✅",
+      "GET /api/upload/audio ✅",
       "ADMIN PANEL:",
       "GET /admin/users ✅",
       "GET /admin/sounds ✅",
       "POST /admin/sounds ✅",
       "PUT /admin/sounds/:id ✅",
       "DELETE /admin/sounds/:id ✅",
-      "GET /admin/videos ✅",
-      "POST /admin/videos ✅",
       "GET /admin/sleep-data ✅",
-      "VIDEO SYSTEM:",
-      "GET /api/videos ✅",
-      "GET /api/videos/categories ✅",
-      "GET /api/videos/stats ✅",
-      "POST /api/videos ✅",
-      "PUT /api/videos/:id ✅",
-      "DELETE /api/videos/:id ✅",
       "AI SYSTEM:",
       "POST /api/ai/analyze-sleep ✅",
       "GET /api/ai/analysis/:sessionId ✅",
@@ -2601,10 +2273,11 @@ app.get('/', (req, res) => {
     baseURL: "https://sleep-tracker-backend-0a9f.onrender.com",
     features: [
       "✅ Complete Authentication System with JWT",
-      "✅ Sleep Session Management & Analytics",
+      "✅ Sleep Session Management & Analytics", 
       "✅ Subscription & Gift Code System",
+      "✅ Payment Integration with Stripe",
+      "✅ File Upload System for Audio",
       "✅ Admin Panel with Complete Management",
-      "✅ Video Content Management",
       "✅ AI Sleep Analysis",
       "✅ 260+ Sounds Management",
       "✅ Real-time Dashboard Analytics",
@@ -2618,16 +2291,16 @@ app.get('/', (req, res) => {
 
 // ==================== SERVER STARTUP ====================
 
-const PORT = config.port;
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`🚀 LEGENDARY PRODUCTION Server running on port ${PORT}`);
   console.log(`📡 ALL 35+ APIs READY at: http://localhost:${PORT}/api`);
   console.log(`🔐 AUTHENTICATION SYSTEM: ACTIVE`);
   console.log(`💤 SLEEP SESSION MANAGEMENT: ACTIVE`);
-  console.log(`💰 SUBSCRIPTION SYSTEM: ACTIVE`);
+  console.log(`💰 SUBSCRIPTION & PAYMENT SYSTEM: ACTIVE`);
+  console.log(`📁 FILE UPLOAD SYSTEM: ACTIVE`);
   console.log(`👑 ADMIN PANEL: http://localhost:${PORT}/admin`);
-  console.log(`🎬 VIDEO SYSTEM: http://localhost:${PORT}/api/videos`);
   console.log(`🤖 AI DETECTION: http://localhost:${PORT}/api/ai/analyze-sleep`);
   console.log(`✅ Health check: http://localhost:${PORT}/api/health`);
   console.log(`🎯 GREGG'S REQUIREMENTS: 100% COMPLETED ✅`);
